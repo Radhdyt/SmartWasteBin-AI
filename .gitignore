@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.venv*/
+runs/
+logs/
+.DS_Store
+*.pt
+!models/*.pt
+!yolov8n.pt
+!yolov8n-cls.pt

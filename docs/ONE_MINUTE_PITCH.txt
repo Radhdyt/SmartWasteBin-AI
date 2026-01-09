@@ -1,0 +1,14 @@
+Halo semuanya,
+
+Bayangkan berapa banyak sampah yang menumpuk di TPA hanya karena kita salah memilah, atau bahkan malas memilahnya dari awal.
+
+Hari ini, kami memperkenalkan **Smart Waste Bin**. Ini bukan sekadar tempat sampah, tapi sebuah sistem cerdas yang "meminjam" mata komputer untuk melihat apa yang sedang Anda buang.
+
+Cara kerjanya sederhana namun canggih:
+Mengandalkan kamera ESP32 dan kecerdasan buatan YOLOv8 di laptop, alat ini bisa mengenali apakah Anda memegang botol plastik atau kulit pisang dalam hitungan detik.
+
+Begitu objek teridentifikasi, sistem akan otomatis menggerakkan motor servo untuk memisahkan sampah tersebut—Organik ke kiri, Non-Organik ke kanan. Tanpa Anda perlu menyentuh tutupnya, dan tanpa perlu bingung lagi.
+
+Prototipe ini adalah langkah awal kami menggabungkan teknologi Computer Vision dan IoT untuk menciptakan lingkungan yang lebih bersih dan proses daur ulang yang jauh lebih efisien.
+
+Terima kasih.

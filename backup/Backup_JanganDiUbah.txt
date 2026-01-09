@@ -1,0 +1,300 @@
+#include <WiFi.h>
+#include "esp_camera.h"
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <ESP32Servo.h>
+
+// ================= KONFIGURASI WIFI =================
+const char* ssid = "NAMA_HOTSPOT_HP";     // GANTI INI
+const char* password = "PASSWORD_HOTSPOT"; // GANTI INI
+
+// ================= DEFINISI PIN (Sesuai Wiring Baru) =================
+#define SERVO_PIN 12
+#define TRIG_PIN  13
+#define ECHO_PIN  2
+#define I2C_SDA   14
+#define I2C_SCL   15
+
+// ================= KONFIGURASI SERVO =================
+Servo myServo;
+// Sudut Servo (Sesuaikan dengan mekanik tempat sampah Anda)
+int angleTutup = 90;
+int angleOrganik = 30;   // Kiri
+int angleAnorganik = 150; // Kanan
+
+// ================= KONFIGURASI LCD =================
+// Alamat I2C biasanya 0x27 atau 0x3F
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+// ================= KAMERA PINS (AI THINKER) =================
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+WiFiServer server(80);
+
+// Variabel Timing (Agar tidak pakai delay blocking)
+unsigned long lastDistanceCheck = 0;
+unsigned long servoCloseTime = 0;
+bool servoIsOpen = false;
+
+// Deklarasi Fungsi
+bool initCamera();
+void handleClient(WiFiClient &client);
+String urlDecode(const String &s);
+void bukaServo(String tipe);
+void updateSensors();
+
+void setup() {
+  // 1. Matikan Brownout (Wajib untuk ESP32-CAM)
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  Serial.begin(9600);
+  Serial.println("System Starting...");
+
+  // 2. Init Sensor & Aktuator
+  // -- Servo --
+  myServo.setPeriodHertz(50); 
+  myServo.attach(SERVO_PIN, 500, 2400);
+  myServo.write(angleTutup);
+
+  // -- Ultrasonik --
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // -- LCD (Custom Pin I2C) --
+  Wire.begin(I2C_SDA, I2C_SCL); // Start I2C di pin 14 & 15
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("Booting System");
+  lcd.setCursor(0,1);
+  lcd.print("Wait WiFi...");
+
+  // 3. Init Kamera
+  if(!initCamera()){
+    Serial.println("Kamera Gagal Init");
+    lcd.clear(); lcd.print("Cam Init Fail");
+    while(true);
+  }
+
+  // 4. Konek WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.print("\nIP: ");
+  Serial.println(WiFi.localIP());
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Siap Digunakan");
+  lcd.setCursor(0,1);
+  lcd.print(WiFi.localIP());
+  
+  server.begin();
+  delay(2000); // Tampilkan IP sebentar
+  lcd.clear();
+}
+
+void loop() {
+  // 1. Cek Client Web (Kamera/Perintah)
+  WiFiClient client = server.available();
+  if (client) {
+    client.setTimeout(2000);
+    handleClient(client);
+    client.stop();
+  }
+
+  // 2. Update Sensor & LCD (Setiap 500ms)
+  updateSensors();
+
+  // 3. Cek apakah Servo harus nutup balik?
+  if (servoIsOpen && millis() > servoCloseTime) {
+    myServo.write(angleTutup);
+    servoIsOpen = false;
+    // Reset tampilan LCD ke standby
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Smart Trash Bin");
+  }
+}
+
+void updateSensors() {
+  if (millis() - lastDistanceCheck > 1000) { // Cek tiap 1 detik
+    lastDistanceCheck = millis();
+
+    // Baca Ultrasonik
+    digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+    
+    long duration = pulseIn(ECHO_PIN, HIGH);
+    int distance = duration * 0.034 / 2;
+
+    // Hitung Persentase (Asumsi tinggi tong 30cm)
+    int tinggiTong = 30; 
+    int isi = map(distance, tinggiTong, 5, 0, 100); 
+    if (isi < 0) isi = 0;
+    if (isi > 100) isi = 100;
+
+    // Tampilkan di LCD (Hanya baris bawah, baris atas buat status sampah)
+    // Jika servo sedang terbuka, jangan timpa tulisan "Organik/Anorganik"
+    if (!servoIsOpen) { 
+      lcd.setCursor(0,0);
+      lcd.print("Smart Trash Bin ");
+    }
+    
+    lcd.setCursor(0,1);
+    lcd.print("Penuh: ");
+    lcd.print(isi);
+    lcd.print("%    ");
+  }
+}
+
+void bukaServo(String tipe) {
+  servoIsOpen = true;
+  servoCloseTime = millis() + 3000; // Buka selama 3 detik
+  
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Kategori:");
+  lcd.setCursor(0,1);
+  
+  if (tipe == "ORGANIK") {
+    lcd.print(">> ORGANIK <<");
+    myServo.write(angleOrganik);
+  } else {
+    lcd.print(">> ANORGANIK <<");
+    myServo.write(angleAnorganik);
+  }
+}
+
+// ================= FUNGSI WEB SERVER =================
+void handleClient(WiFiClient &client) {
+  String reqLine = client.readStringUntil('\n');
+  reqLine.trim();
+  if (reqLine.length() == 0) return;
+
+  while (client.connected()) {
+    String h = client.readStringUntil('\n');
+    if (h == "\r" || h.length() == 0) break;
+  }
+
+  int sp1 = reqLine.indexOf(' ');
+  int sp2 = reqLine.indexOf(' ', sp1 + 1);
+  if (sp1 < 0 || sp2 < 0) return;
+  String url = reqLine.substring(sp1 + 1, sp2);
+
+  // STREAMING VIDEO
+  if (url == "/") {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println("Connection: close");
+    client.println();
+    client.println("<!DOCTYPE HTML><html><body>");
+    client.println("<h2>Monitor Sampah</h2>");
+    client.println("<img id='cam' src='/jpg' style='width:300px;'/>");
+    client.println("<script>setInterval(()=>{document.getElementById('cam').src='/jpg?t='+Date.now();},200);</script>");
+    client.println("</body></html>");
+    return;
+  }
+
+  // GAMBAR RAW
+  if (url.startsWith("/jpg")) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+      client.println("HTTP/1.1 500 Error");
+      return;
+    }
+    client.printf("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", (unsigned)fb->len);
+    client.write(fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  // TERIMA PERINTAH
+  if (url.startsWith("/label?value=")) {
+    String value = url.substring(String("/label?value=").length());
+    value = urlDecode(value);
+    
+    if (value.indexOf("organi") >= 0) {
+      bukaServo("ORGANIK");
+    } else if (value.indexOf("anorg") >= 0 || value.indexOf("non") >= 0) {
+      bukaServo("ANORGANIK");
+    }
+    client.println("HTTP/1.1 200 OK\r\n\r\nOK");
+    return;
+  }
+  
+  client.println("HTTP/1.1 404 Not Found");
+}
+
+String urlDecode(const String &s) {
+  String out;
+  char c;
+  for (int i = 0; i < s.length(); i++) {
+    c = s[i];
+    if (c == '+') out += ' ';
+    else if (c == '%' && i + 2 < s.length()) {
+      char code0 = s[++i];
+      char code1 = s[++i];
+      c = (char) (strtoul(String(char(code0) + String(code1)).c_str(), NULL, 16));
+      out += c;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+bool initCamera() {
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  
+  // Gunakan Resolusi Kecil agar RAM cukup untuk WiFi & Servo
+  config.frame_size = FRAMESIZE_QQVGA; 
+  config.jpeg_quality = 12;
+  config.fb_count = 1;
+
+  esp_err_t err = esp_camera_init(&config);
+  return (err == ESP_OK);
+}

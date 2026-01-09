@@ -1,0 +1,7 @@
+ultralytics
+opencv-python
+pyserial
+pyyaml
+tqdm
+numpy==1.26.4
+requests
